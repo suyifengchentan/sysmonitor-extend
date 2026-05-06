@@ -12,6 +12,14 @@
 
 ![性能面板](https://raw.githubusercontent.com/lcx-0504/sysmonitor/main/screenshots/perf.png)
 
+## 新功能
+
+### 多厂商 GPU 支持
+除 NVIDIA（`nvidia-smi`）外，现已原生支持 **AMD**（`rocm-smi`）和 **Intel**（sysfs）GPU。后端自动检测可用工具——如需手动指定，设置 `sysmonitor.gpuBackend` 为 `"nvidia"`、`"amd"` 或 `"intel"`。
+
+### 可调节仪表板卡片
+每个监控卡片（CPU、内存、GPU、网络、磁盘、SSH）可在设置面板中独立显隐。隐藏的卡片自动折叠，其余卡片自动补位。
+
 ## 功能
 
 | 类别 | 详情 |

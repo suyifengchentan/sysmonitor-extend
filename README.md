@@ -14,6 +14,14 @@ A lightweight VS Code / Cursor extension for monitoring system resources on **re
 
 ![Performance Tab](https://raw.githubusercontent.com/lcx-0504/sysmonitor/main/screenshots/perf.png)
 
+## What's New
+
+### Multi-Vendor GPU Support
+Beyond NVIDIA (`nvidia-smi`), the extension now supports **AMD** (`rocm-smi`) and **Intel** (sysfs) GPUs out of the box. The backend auto-detects by probing available tools — set `sysmonitor.gpuBackend` to `"nvidia"`, `"amd"`, or `"intel"` to override.
+
+### Adjustable Dashboard Cards
+Each monitoring card (CPU, RAM, GPU, Network, Disk, SSH) can be independently shown or hidden via the settings panel. Hidden cards collapse automatically so the remaining cards fill the space.
+
 ## Features
 
 | Category | Details |
