@@ -1,4 +1,4 @@
-name: Build VSIX
+name: Build & Release
 
 on:
   push:
@@ -9,6 +9,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -18,10 +20,22 @@ jobs:
 
       - run: npm install
 
-      - run: npx vsce package -o sysmonitor.vsix
+      - name: Get version
+        id: version
+        run: echo "v=$(node -p "require('./package.json').version")" >> $GITHUB_OUTPUT
+
+      - run: npx vsce package -o sysmonitor-${{ steps.version.outputs.v }}.vsix
 
       - uses: actions/upload-artifact@v4
         with:
           name: sysmonitor
-          path: sysmonitor.vsix
+          path: sysmonitor-*.vsix
           retention-days: 30
+
+      - uses: softprops/action-gh-release@v2
+        if: github.event_name == 'push'
+        with:
+          tag_name: v${{ steps.version.outputs.v }}
+          name: v${{ steps.version.outputs.v }}
+          files: sysmonitor-*.vsix
+          generate_release_notes: true
