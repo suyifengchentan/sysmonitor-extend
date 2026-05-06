@@ -39,8 +39,7 @@
         {
           "id": "sysmonitor-container",
           "title": "%viewTitle%",
-          "icon": "./icon.svg",
-          "when": "remoteName || isLinux"
+          "icon": "./icon.svg"
         }
       ]
     },
@@ -49,16 +48,14 @@
         {
           "type": "webview",
           "id": "sysmonitor.panel",
-          "name": "%viewName%",
-          "when": "remoteName || isLinux"
+          "name": "%viewName%"
         }
       ]
     },
     "commands": [
       {
         "command": "sysmonitor.openPanel",
-        "title": "%cmdOpen%",
-        "when": "remoteName || isLinux"
+        "title": "%cmdOpen%"
       }
     ],
     "configuration": {
@@ -107,8 +104,60 @@
             "sparkMinutes": 5
           },
           "description": "Display settings"
+        },
+        "sysmonitor.gpuBackend": {
+          "type": "string",
+          "default": "auto",
+          "enum": [
+            "auto",
+            "nvidia",
+            "amd",
+            "intel"
+          ],
+          "description": "GPU monitoring backend. 'auto' auto-detects by probing available CLI tools."
+        },
+        "sysmonitor.panelCards": {
+          "type": "object",
+          "default": {
+            "cpu": true,
+            "ram": true,
+            "gpu": true,
+            "network": true,
+            "disk": true,
+            "ssh": false
+          },
+          "properties": {
+            "cpu": {
+              "type": "boolean",
+              "description": "Show CPU card"
+            },
+            "ram": {
+              "type": "boolean",
+              "description": "Show RAM card"
+            },
+            "gpu": {
+              "type": "boolean",
+              "description": "Show GPU cards"
+            },
+            "network": {
+              "type": "boolean",
+              "description": "Show Network card"
+            },
+            "disk": {
+              "type": "boolean",
+              "description": "Show Disk card"
+            },
+            "ssh": {
+              "type": "boolean",
+              "description": "Show SSH traffic card (only when in SSH session)"
+            }
+          },
+          "description": "Dashboard card visibility toggles"
         }
       }
     }
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.9.1"
   }
 }

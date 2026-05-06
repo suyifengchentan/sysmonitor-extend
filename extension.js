@@ -30,6 +30,250 @@ let _onChainDone = null;  // one-shot callback when first full chain completes
 
 let _smiChainRunning = false;
 const GPU_CACHE_TTL = 30000;
+
+// ── GPU backend abstraction ──────────────────────────────────────────────────
+// Backend interface: { name, detect():bool, refresh(cb), getProcesses(cb) }
+// _gpuCache, _gpuCacheTime, _gpuState, _uuidToIdx, _uuidToMem — shared state filled by backends
+
+const NvidiaBackend = {
+  name: 'nvidia',
+  detect() {
+    try { execSync('which nvidia-smi', { timeout: 3000, stdio: 'ignore' }); return true; }
+    catch { return false; }
+  },
+  refresh(callback) {
+    execFile('nvidia-smi', [
+      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid',
+      '--format=csv,noheader,nounits'
+    ], { timeout: 15000 }, (err, stdout) => {
+      if (err) {
+        const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
+        if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
+      } else {
+        try {
+          const parsed = _parseNvidiaCsv(stdout);
+          if (parsed.length > 0 || _gpuCache.length === 0) {
+            _gpuCache = parsed;
+            _gpuCacheTime = Date.now();
+            _uuidToIdx = {}; _uuidToMem = {};
+            for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
+          }
+          if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, nvidia)'); _gpuState = 'fresh'; }
+          if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+        } catch (e) {
+          if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
+        }
+      }
+      if (callback) callback();
+    });
+  },
+  getProcesses(callback) {
+    execFile('nvidia-smi',
+      ['--query-compute-apps=pid,gpu_uuid,used_memory', '--format=csv,noheader,nounits'],
+      { timeout: 15000 }, (err2, appOut) => {
+        _smiChainRunning = false;
+        if (err2 || !appOut.trim()) { if (callback) callback(); return; }
+        const gpuMap = {};
+        const myUuids = new Set();
+        const uid = process.getuid();
+        for (const line of appOut.trim().split('\n').filter(Boolean)) {
+          const parts = line.split(',').map(s => s.trim());
+          const pid = parseInt(parts[0]);
+          const uuid = parts[1] || '';
+          const vram = parseInt(parts[2]) || 0;
+          if (pid) {
+            if (!gpuMap[pid]) gpuMap[pid] = [];
+            gpuMap[pid].push({ idx: _uuidToIdx[uuid] !== undefined ? _uuidToIdx[uuid] : -1, vram, memTotal: _uuidToMem[uuid] || 0 });
+            try {
+              const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
+              const m = status.match(/Uid:\s+(\d+)/);
+              if (m && parseInt(m[1]) === uid) myUuids.add(uuid);
+            } catch { }
+          }
+        }
+        _gpuProcMap = gpuMap;
+        _gpuMyIndices = [...myUuids].map(u => _uuidToIdx[u]).filter(i => i !== undefined).sort((a, b) => a - b);
+        if (_onChainDone) { _onChainDone(); _onChainDone = null; }
+        if (callback) callback();
+      }
+    );
+  }
+};
+
+const AmdBackend = {
+  name: 'amd',
+  detect() {
+    try { execSync('which rocm-smi', { timeout: 3000, stdio: 'ignore' }); return true; }
+    catch { return false; }
+  },
+  refresh(callback) {
+    execFile('rocm-smi', ['--showuse', '--showtemp', '--showmeminfo', 'vram', '--json'], { timeout: 15000 }, (err, stdout) => {
+      if (err) {
+        const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
+        if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
+        if (callback) callback();
+        return;
+      }
+      try {
+        const parsed = _parseRocmJson(stdout);
+        if (parsed.length > 0 || _gpuCache.length === 0) {
+          _gpuCache = parsed;
+          _gpuCacheTime = Date.now();
+          _uuidToIdx = {}; _uuidToMem = {};
+          for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
+        }
+        if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, amd)'); _gpuState = 'fresh'; }
+        if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+      } catch (e) {
+        if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
+      }
+      if (callback) callback();
+    });
+  },
+  getProcesses(callback) {
+    _smiChainRunning = false;
+    if (_onChainDone) { _onChainDone(); _onChainDone = null; }
+    if (callback) callback();
+  }
+};
+
+const IntelBackend = {
+  name: 'intel',
+  detect() {
+    try {
+      const cards = fs.readdirSync('/sys/class/drm').filter(d => /^card\d+$/.test(d));
+      for (const card of cards) {
+        try { fs.accessSync('/sys/class/drm/' + card + '/device/gpu_busy_percent', fs.constants.R_OK); return true; }
+        catch { }
+      }
+      return false;
+    } catch { return false; }
+  },
+  refresh(callback) {
+    try {
+      const cards = fs.readdirSync('/sys/class/drm').filter(d => /^card\d+$/.test(d)).sort();
+      const parsed = [];
+      for (const card of cards) {
+        const base = '/sys/class/drm/' + card + '/device/';
+        try {
+          const readVal = (f) => { try { return parseInt(fs.readFileSync(base + f, 'utf8').trim()); } catch { return 0; } };
+          const util = readVal('gpu_busy_percent');
+          let memUsed = 0, memTotal = 0;
+          try { memUsed = parseInt(fs.readFileSync('/sys/class/drm/' + card + '/device/mem_info_vram_used', 'utf8').trim()) || 0; } catch { }
+          try { memTotal = parseInt(fs.readFileSync('/sys/class/drm/' + card + '/device/mem_info_vram_total', 'utf8').trim()) || 0; } catch { }
+          let temp = 0;
+          try {
+            const hwmonDir = fs.readdirSync(base + 'hwmon')[0];
+            if (hwmonDir) temp = Math.round(parseInt(fs.readFileSync(base + 'hwmon/' + hwmonDir + '/temp1_input', 'utf8').trim()) / 1000);
+          } catch { }
+          parsed.push({
+            idx: parseInt(card.replace('card', '')),
+            name: 'Intel GPU ' + card.replace('card', ''),
+            uuid: 'intel-' + card,
+            util, memUsed, memTotal, temp,
+            powerDraw: null, powerLimit: null,
+            backend: 'intel'
+          });
+        } catch { }
+      }
+      if (parsed.length > 0 || _gpuCache.length === 0) {
+        _gpuCache = parsed;
+        _gpuCacheTime = Date.now();
+        _uuidToIdx = {}; _uuidToMem = {};
+        for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
+      }
+      if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, intel)'); _gpuState = 'fresh'; }
+      if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+    } catch (e) {
+      const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
+      if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + e.message); _gpuState = s; }
+    }
+    if (callback) callback();
+  },
+  getProcesses(callback) {
+    _smiChainRunning = false;
+    if (_onChainDone) { _onChainDone(); _onChainDone = null; }
+    if (callback) callback();
+  }
+};
+
+const GPU_BACKENDS = [NvidiaBackend, AmdBackend, IntelBackend];
+let _gpuBackend = null;
+let _gpuBackendResolved = false;
+
+function getGpuBackend() {
+  if (_gpuBackendResolved) return _gpuBackend;
+  _gpuBackendResolved = true;
+  const cfg = getConfig();
+  const want = cfg.gpuBackend || 'auto';
+  if (want !== 'auto') {
+    _gpuBackend = GPU_BACKENDS.find(b => b.name === want) || null;
+    if (!_gpuBackend) dbg('gpu backend "' + want + '" not recognized');
+    else dbg('gpu backend forced: ' + want);
+    return _gpuBackend;
+  }
+  for (const b of GPU_BACKENDS) {
+    if (b.detect()) {
+      _gpuBackend = b;
+      dbg('gpu backend auto-detected: ' + b.name);
+      return _gpuBackend;
+    }
+  }
+  dbg('gpu backend: none detected');
+  return null;
+}
+
+function _parseNvidiaCsv(stdout) {
+  return stdout.trim().split('\n').filter(Boolean).map(line => {
+    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid] = line.split(',').map(s => s.trim());
+    return {
+      idx: parseInt(idx), name, uuid: uuid || '',
+      util: parseInt(util), memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
+      temp: parseInt(temp),
+      powerDraw: isNaN(parseFloat(pd)) ? null : Number(parseFloat(pd).toFixed(0)),
+      powerLimit: isNaN(parseFloat(pl)) ? null : Number(parseFloat(pl).toFixed(0)),
+      backend: 'nvidia'
+    };
+  });
+}
+
+function _parseRocmJson(stdout) {
+  const raw = typeof stdout === 'string' ? JSON.parse(stdout) : stdout;
+  // rocm-smi --json returns either an object keyed by device (e.g. "card0") or an array
+  const entries = Array.isArray(raw) ? raw : Object.entries(raw);
+  return entries.map(([key, dev], i) => {
+    const data = (typeof dev === 'object' && dev !== null) ? dev : {};
+    // rocm-smi JSON metric keys vary by version; match known patterns
+    const getVal = (patterns) => {
+      for (const k of Object.keys(data)) {
+        for (const p of patterns) {
+          if (k.toLowerCase().includes(p.toLowerCase())) {
+            const v = parseFloat(data[k]);
+            return isNaN(v) ? 0 : v;
+          }
+        }
+      }
+      return 0;
+    };
+    const idxMatch = key.match(/(\d+)/);
+    const idx = idxMatch ? parseInt(idxMatch[1]) : i;
+    const util = Math.round(getVal(['gpu use', 'GPU use', 'gpu_use', 'utilization']));
+    // Temperature: prefer edge, fallback to any temp
+    const temp = Math.round(getVal(['temperature (sensor edge)', 'edge', 'temp', 'temperature']));
+    const memTotal = Math.round(getVal(['vram total memory', 'VRAM Total Memory', 'vram_total', 'total memory']) / 1048576);
+    const memUsed = Math.round(getVal(['vram total used memory', 'VRAM Total Used Memory', 'vram_used', 'used memory']) / 1048576);
+    // GPU name: try to extract from device name or card key
+    let name = 'AMD GPU ' + idx;
+    for (const k of Object.keys(data)) {
+      if (k.toLowerCase().includes('name') || k.toLowerCase().includes('series')) {
+        name = String(data[k]).trim();
+        break;
+      }
+    }
+    return { idx, name, uuid: 'amd-' + idx, util, memUsed, memTotal, temp, powerDraw: null, powerLimit: null, backend: 'amd' };
+  });
+}
+
 function dbg(msg) { if (_log) _log.appendLine('[' + new Date().toISOString().slice(11, 23) + '] ' + msg); }
 
 function getCpuPercent() {
@@ -108,75 +352,19 @@ function getDiskIO() {
   } catch { return { r: 0, w: 0 }; }
 }
 
-const GPU_SMI_ARGS = ['--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid',
-  '--format=csv,noheader,nounits'];
-
-function parseGpuCsv(stdout) {
-  return stdout.trim().split('\n').filter(Boolean).map(line => {
-    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid] = line.split(',').map(s => s.trim());
-    return {
-      idx: parseInt(idx), name, uuid: uuid || '',
-      util: parseInt(util), memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
-      temp: parseInt(temp),
-      power: isNaN(parseFloat(pd)) ? null : { draw: parseFloat(pd).toFixed(0), limit: parseFloat(pl).toFixed(0) },
-    };
-  });
-}
-
-// Unified async chain: GPU stats + UUID mapping → compute apps
+// ── GPU chain (dispatches to active backend) ──────────────────────────────
 function refreshGpuChain() {
   if (_smiChainRunning) return;
+  const backend = getGpuBackend();
+  if (!backend) {
+    if (_gpuCache.length > 0) { _gpuCache = []; _gpuCacheTime = 0; _gpuState = 'unavailable'; }
+    if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+    if (_onChainDone) { _onChainDone(); _onChainDone = null; }
+    return;
+  }
   _smiChainRunning = true;
-  // Step 1: GPU stats
-  execFile('nvidia-smi', GPU_SMI_ARGS, { timeout: 15000 }, (err, stdout) => {
-    if (err) {
-      const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
-      if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
-    } else {
-      try {
-        const parsed = parseGpuCsv(stdout);
-        if (parsed.length > 0 || _gpuCache.length === 0) {
-          _gpuCache = parsed;
-          _gpuCacheTime = Date.now();
-          // Build UUID→index/memTotal maps from Step 1 output (eliminates Step 3)
-          _uuidToIdx = {}; _uuidToMem = {};
-          for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
-        }
-        if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus)'); _gpuState = 'fresh'; }
-        if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
-      } catch (e) {
-        if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
-      }
-    }
-    // Step 2: compute apps (for process GPU tags) — UUID mapping comes from Step 1
-    execFile('nvidia-smi',
-      ['--query-compute-apps=pid,gpu_uuid,used_memory', '--format=csv,noheader,nounits'],
-      { timeout: 15000 }, (err2, appOut) => {
-        _smiChainRunning = false;
-        if (err2 || !appOut.trim()) return;
-        const gpuMap = {};
-        const myUuids = new Set();
-        const uid = process.getuid();
-        for (const line of appOut.trim().split('\n').filter(Boolean)) {
-          const parts = line.split(',').map(s => s.trim());
-          const pid = parseInt(parts[0]);
-          const uuid = parts[1] || '';
-          const vram = parseInt(parts[2]) || 0;
-          if (pid) {
-            if (!gpuMap[pid]) gpuMap[pid] = [];
-            gpuMap[pid].push({ idx: _uuidToIdx[uuid] !== undefined ? _uuidToIdx[uuid] : -1, vram, memTotal: _uuidToMem[uuid] || 0 });
-            try {
-              const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
-              const m = status.match(/Uid:\s+(\d+)/);
-              if (m && parseInt(m[1]) === uid) myUuids.add(uuid);
-            } catch { }
-          }
-        }
-        _gpuProcMap = gpuMap;
-        _gpuMyIndices = [...myUuids].map(u => _uuidToIdx[u]).filter(i => i !== undefined).sort((a, b) => a - b);
-        if (_onChainDone) { _onChainDone(); _onChainDone = null; }
-      }
-    );
+  backend.refresh(() => {
+    backend.getProcesses(() => {});
   });
 }
 
@@ -381,6 +569,7 @@ function getWebviewHtml(nonce, initCfg) {
   .sett-sub { margin-left: 12px; margin-top: 2px; }
   .sett-hint { font-size: 9px; color: var(--muted); margin-top: 2px; }
   .card { margin-bottom: 10px; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
+  .card.hidden { display: none !important; }
   .card > *:not(.spark-bg) { position: relative; z-index: 1; }
   .spark-bg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; z-index: 0; }
   .card-head { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
@@ -531,6 +720,10 @@ function getWebviewHtml(nonce, initCfg) {
     <div id="sett-disk-body"></div>
   </div>
   <div class="sett-section">
+    <div class="sett-label" id="sett-cards-label">Dashboard Cards</div>
+    <div id="sett-cards-body"></div>
+  </div>
+  <div class="sett-section">
     <div class="sett-label" id="sett-display-label">显示</div>
     <div id="sett-display-body"></div>
   </div>
@@ -542,7 +735,7 @@ function getWebviewHtml(nonce, initCfg) {
 <!-- ── 性能 tab ── -->
 <div class="tab-content active" id="tab-perf">
 <div class="net-ssh-row">
-  <div class="card">
+  <div class="card" data-card="cpu">
     <svg class="spark-bg" id="cpu-spark" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="cpu-spark-area" /></svg>
     <div class="card-head"><span class="card-label">CPU</span><span class="card-value" id="cpu-val">--</span></div>
     <div class="track"><div class="fill" id="cpu-bar" style="width:0%"></div></div>
@@ -550,7 +743,7 @@ function getWebviewHtml(nonce, initCfg) {
     <div class="detail-row"><span id="l-5m">5 分钟</span><span id="load-5">--</span></div>
     <div class="detail-row"><span id="l-15m">15 分钟</span><span id="load-15">--</span></div>
   </div>
-  <div class="card">
+  <div class="card" data-card="ram">
     <svg class="spark-bg" id="ram-spark" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="ram-spark-area" /></svg>
     <div class="card-head"><span class="card-label">RAM</span><span class="card-value" id="mem-val">--</span></div>
     <div class="track"><div class="fill" id="mem-bar" style="width:0%"></div></div>
@@ -560,14 +753,14 @@ function getWebviewHtml(nonce, initCfg) {
   </div>
 </div>
 
-<div class="card" id="disk-card" style="display:none">
+<div class="card" id="disk-card" data-card="disk" style="display:none">
   <svg class="spark-bg" id="disk-spark" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="disk-spark-r-area" /><path id="disk-spark-w-area" /></svg>
   <div class="card-head"><span class="card-label" id="disk-label">Disk</span><span class="card-value" id="disk-io-val"></span></div>
   <div id="disk-body"></div>
 </div>
 
 <div class="net-ssh-row">
-  <div class="card" id="net-card">
+  <div class="card" id="net-card" data-card="network">
     <svg class="spark-bg" id="net-spark" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="net-spark-tx-area" /><path id="net-spark-rx-area" /></svg>
     <div class="card-head"><span class="card-label" id="net-title">网络</span></div>
     <div class="net-row">
@@ -581,7 +774,7 @@ function getWebviewHtml(nonce, initCfg) {
       </div>
     </div>
   </div>
-  <div class="card" id="ssh-card" style="display:none">
+  <div class="card" id="ssh-card" data-card="ssh" style="display:none">
     <svg class="spark-bg" id="ssh-spark" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="ssh-spark-tx-area" /><path id="ssh-spark-rx-area" /></svg>
     <div class="card-head"><span class="card-label" id="ssh-label">本机 SSH</span></div>
     <div class="net-row">
@@ -597,7 +790,7 @@ function getWebviewHtml(nonce, initCfg) {
   </div>
 </div>
 
-<div class="card" id="free-gpu-card" style="display:none">
+<div class="card" id="free-gpu-card" data-card="gpu" style="display:none">
   <div class="card-head"><span class="card-label">GPU</span><span class="card-value" id="gpu-summary">--</span></div>
   <div class="capsules" id="gpu-capsules"></div>
   <div class="capsule-actions" id="capsule-actions">
@@ -606,7 +799,7 @@ function getWebviewHtml(nonce, initCfg) {
     <button class="action-btn primary" id="copy-btn" disabled>复制环境变量</button>
   </div>
 </div>
-<div class="gpu-grid" id="gpu-body"><span class="gpu-na">检测中…</span></div>
+<div class="gpu-grid" id="gpu-body" data-card="gpu"><span class="gpu-na">检测中…</span></div>
 </div>
 
 <!-- ── 进程 tab ── -->
@@ -633,7 +826,7 @@ function getWebviewHtml(nonce, initCfg) {
     zh = lang && lang.startsWith('zh');
     T = zh
       ? { min:' 分钟',cores:' 核',used:'已用',avail:'可用',total:'总计',srvNet:'服务器网络',net:'网络',localSSH:'本机 SSH',up:'↑ 上传',down:'↓ 下载',selAll:'全选空闲',clear:'清除',copyEnv:'复制环境变量',detecting:'检测中…',noGpu:'未检测到 NVIDIA GPU',updAt:'更新于 ',utilLabel:'利用率',memLabel:'显存',tempLabel:'温度',pwLabel:'功耗',
-          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',statusBar:'状态栏',barToggle:'显示状态栏',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
+          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',panelCardsLabel:'仪表板卡片',statusBar:'状态栏',barToggle:'显示状态栏',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
           netLabel:'网络速率',gpuLabel:'GPU',
           scopeOff:'关',scopeSummary:'总览',scopeCard:'指定卡',scopeMy:'我的卡',metUtil:'仅利用率',metVram:'仅显存',metBoth:'全部显示',
           netUp:'仅上传',netDown:'仅下载',netAll:'全部显示',netMerge:'合并显示',
@@ -642,7 +835,7 @@ function getWebviewHtml(nonce, initCfg) {
           displayLabel:'显示',chartsToggle:'卡片背景图表',sparkLabel:'图表时长',tabularNums:'等宽数字',tabularNumsTip:'所有数字宽度一致，布局更稳定，但可能显得略宽松',
           pcpu:'CPU',pmem:'内存',pgpu:'GPU',ppid:'PID',puser:'用户',pname:'进程名',pcpuPct:'CPU%',pmemCol:'内存',pgpuCol:'GPU',pcount:'共 {n} 进程',pnoGpu:'—',pcmd:'命令',filterHint:'搜索进程...' }
       : { min:' min',cores:' cores',used:'Used',avail:'Avail',total:'Total',srvNet:'Server Net',net:'Network',localSSH:'Local SSH',up:'↑ Up',down:'↓ Down',selAll:'Select All',clear:'Clear',copyEnv:'Copy Env Var',detecting:'Detecting…',noGpu:'No NVIDIA GPU detected',updAt:'Updated ',utilLabel:'Util',memLabel:'VRAM',tempLabel:'Temp',pwLabel:'Power',
-          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',statusBar:'Status Bar',barToggle:'Show Status Bar',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
+          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
           netLabel:'Network',gpuLabel:'GPU',
           scopeOff:'Off',scopeSummary:'Summary',scopeCard:'Card',scopeMy:'My Card',metUtil:'Util Only',metVram:'VRAM Only',metBoth:'All',
           netUp:'Upload',netDown:'Download',netAll:'All',netMerge:'Merged',
@@ -731,6 +924,7 @@ function getWebviewHtml(nonce, initCfg) {
       applyCharts();
       curInterval = data.interval || curInterval;
       gpuCount = data.gpuCount || gpuCount;
+      if (data.panelCards) { panelCards = data.panelCards; applyPanelCards(panelCards, _lastSshState); }
       if (modalOpen) renderSettingsBody();
       return;
     }
@@ -802,6 +996,8 @@ function getWebviewHtml(nonce, initCfg) {
       document.getElementById('net-up-label').textContent = T.up;
       document.getElementById('net-down-label').textContent = T.down;
     }
+    var curSsh = !!(d.ssh && d.ssh.isSSH);
+    if (curSsh !== _lastSshState) { _lastSshState = curSsh; applyPanelCards(panelCards, _lastSshState); }
 
     var gpuBody = document.getElementById('gpu-body');
     if (d.gpus && d.gpus.length) {
@@ -826,7 +1022,7 @@ function getWebviewHtml(nonce, initCfg) {
             + '<div class="track"><div class="fill ' + colorClass(util) + '" id="gpu-util-' + g.idx + '"></div></div>'
             + '<div class="bar-label"><span>' + T.memLabel + '</span><span class="gpu-mem-wrap"><span class="ltr-ellipsis" id="gpu-mem-text-' + g.idx + '" title="' + mu + ' / ' + mt + ' MiB"><bdo dir="ltr">' + mu + ' / ' + mt + ' MiB</bdo></span><span class="gpu-pct" id="gpu-mem-pct-' + g.idx + '">' + memPct + '%</span></span></div>'
             + '<div class="track"><div class="fill ' + colorClass(memPct) + '" id="gpu-mem-' + g.idx + '"></div></div>'
-            + '<div class="gpu-stats"><span id="gpu-temp-' + g.idx + '" title="' + T.tempLabel + ' ' + (g.temp || 0) + ' °C">' + T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b></span>' + (g.power ? '<span id="gpu-power-' + g.idx + '" title="' + T.pwLabel + ' ' + g.power.draw + '/' + g.power.limit + ' W">' + T.pwLabel + ' <b>' + g.power.draw + '/' + g.power.limit + ' W</b></span>' : '') + '</div></div>';
+            + '<div class="gpu-stats"><span id="gpu-temp-' + g.idx + '" title="' + T.tempLabel + ' ' + (g.temp || 0) + ' °C">' + T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b></span>' + (g.powerDraw != null ? '<span id="gpu-power-' + g.idx + '" title="' + T.pwLabel + ' ' + g.powerDraw + '/' + g.powerLimit + ' W">' + T.pwLabel + ' <b>' + g.powerDraw + '/' + g.powerLimit + ' W</b></span>' : '') + '</div></div>';
         });
         gpuBody.innerHTML = ghtml;
         applyCharts();
@@ -873,7 +1069,7 @@ function getWebviewHtml(nonce, initCfg) {
           var te = document.getElementById('gpu-temp-' + g.idx);
           if (te) { te.innerHTML = T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b>'; te.title = T.tempLabel + ' ' + (g.temp || 0) + ' °C'; }
           var pw = document.getElementById('gpu-power-' + g.idx);
-          if (pw && g.power) { pw.innerHTML = T.pwLabel + ' <b>' + g.power.draw + '/' + g.power.limit + ' W</b>'; pw.title = T.pwLabel + ' ' + g.power.draw + '/' + g.power.limit + ' W'; }
+          if (pw && g.powerDraw != null) { pw.innerHTML = T.pwLabel + ' <b>' + g.powerDraw + '/' + g.powerLimit + ' W</b>'; pw.title = T.pwLabel + ' ' + g.powerDraw + '/' + g.powerLimit + ' W'; }
           var ga = document.getElementById('gpu-spark-area-' + g.idx);
           if (ga && gpuHist[g.idx]) renderSpark(ga, null, gpuHist[g.idx], 100, sparkColor(util));
         });
@@ -1001,6 +1197,20 @@ function getWebviewHtml(nonce, initCfg) {
   }
   applyTabularNums();
 
+  // ── 面板卡片显隐 ──
+  var panelCards = __initCfg.panelCards || { cpu: true, ram: true, gpu: true, network: true, disk: true, ssh: false };
+  var _lastSshState = false;
+  function applyPanelCards(cards, isSSH) {
+    document.querySelectorAll('[data-card]').forEach(function(el) {
+      var cardName = el.dataset.card;
+      var userEnabled = cards[cardName] !== false;
+      var available = true;
+      if (cardName === 'ssh') available = !!isSSH;
+      el.classList.toggle('hidden', !userEnabled || !available);
+    });
+  }
+  applyPanelCards(panelCards, false);
+
   // ── 磁盘渲染 ──
   var _diskKeys = [], _gpuKeys = [];
   function renderDisk(disks) {
@@ -1104,6 +1314,31 @@ function getWebviewHtml(nonce, initCfg) {
 
     var barOn = cfg.barEnabled !== false;
     h += row(T.barToggle, '<button class="tb'+(barOn?' on':'')+'" data-act="bar-toggle">'+(barOn?T.enabled:T.disabled)+'</button>');
+
+    // ── Panel Cards (rendered before bar-off early return so toggles always work) ──
+    var cardsBody = document.getElementById('sett-cards-body');
+    if (cardsBody) {
+      var ch = '';
+      ['cpu','ram','gpu','network','disk','ssh'].forEach(function(card) {
+        var labelMap = { cpu: 'CPU', ram: 'RAM', gpu: 'GPU', network: 'Network', disk: 'Disk', ssh: 'SSH' };
+        var on = panelCards[card] !== false;
+        var label = on ? T.enabled : T.disabled;
+        if (card === 'ssh' && on && !_lastSshState) label = T.enabled + ' (offline)';
+        ch += '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + (labelMap[card] || card) + '</span>';
+        ch += '<button class="tb' + (on ? ' on' : '') + '" data-act="panel-card" data-card="' + card + '">' + label + '</button></div>';
+      });
+      cardsBody.innerHTML = ch;
+      cardsBody.querySelectorAll('[data-act="panel-card"]').forEach(function(btn) {
+        btn.addEventListener('click', function() {
+          var card = this.dataset.card;
+          panelCards[card] = panelCards[card] === false;
+          vscode.postMessage({cmd:'setConfig',key:'panelCards',value:panelCards});
+          applyPanelCards(panelCards, _lastSshState);
+          renderSettingsBody();
+        });
+      });
+    }
+
     if (!barOn) { body.innerHTML = h; bindSettingsEvents(body, cfg); return; }
     var curAlign = cfg.alignment || 'left';
     h += row(T.barAlign, '<button class="tb'+(curAlign==='left'?' on':'')+'" data-act="radio" data-key="alignment" data-val="left">'+(zh?'左':'Left')+'</button><button class="tb'+(curAlign==='right'?' on':'')+'" data-act="radio" data-key="alignment" data-val="right">'+(zh?'右':'Right')+'</button>');
@@ -1485,8 +1720,10 @@ const CFG_DEFAULTS = {
   barCfg: { barEnabled: true, alignment: 'left', priority: 10, cpu: true, ram: false, disk: false, diskIO: 'off', net: 'off', ssh: false, gpu: { summary: true, showIdleIds: false, mode: 'off', cards: [], metric: 'both' } },
   diskCfg: { mountFilter: 'default', hideParentMounts: true },
   displayCfg: { charts: true, sparkMinutes: 5, tabularNums: true },
+  gpuBackend: 'auto',
+  panelCards: { cpu: true, ram: true, gpu: true, network: true, disk: true, ssh: false },
 };
-const CFG_KEY_MAP = { interval: 'refreshInterval', barCfg: 'statusBar', diskCfg: 'disk', displayCfg: 'display' };
+const CFG_KEY_MAP = { interval: 'refreshInterval', barCfg: 'statusBar', diskCfg: 'disk', displayCfg: 'display', gpuBackend: 'gpuBackend', panelCards: 'panelCards' };
 let _cfgCache = null;
 let _selfWriting = false;
 let _dirtyKeys = new Set();
@@ -1499,6 +1736,8 @@ function _readSettingsOnce() {
     barCfg: c.get('statusBar') || CFG_DEFAULTS.barCfg,
     diskCfg: c.get('disk') || CFG_DEFAULTS.diskCfg,
     displayCfg: c.get('display') || CFG_DEFAULTS.displayCfg,
+    gpuBackend: c.get('gpuBackend', CFG_DEFAULTS.gpuBackend),
+    panelCards: c.get('panelCards') || CFG_DEFAULTS.panelCards,
   };
 }
 
@@ -1580,7 +1819,7 @@ class MonitorViewProvider {
     const nonce = Math.random().toString(36).slice(2, 18);
     const cfg = getConfig();
     const gpus = getAllGpus();
-    view.webview.html = getWebviewHtml(nonce, { interval: cfg.interval, barCfg: cfg.barCfg, diskCfg: cfg.diskCfg, displayCfg: cfg.displayCfg, gpuCount: gpus.length || 8 });
+    view.webview.html = getWebviewHtml(nonce, { interval: cfg.interval, barCfg: cfg.barCfg, diskCfg: cfg.diskCfg, displayCfg: cfg.displayCfg, gpuCount: gpus.length || 8, panelCards: cfg.panelCards });
 
     view.webview.onDidReceiveMessage(msg => {
       if (msg.cmd === 'getConfig') {
@@ -1599,6 +1838,8 @@ class MonitorViewProvider {
           refreshDiskCache(msg.value, () => { if (this._tick) this._tick(); });
         } else if (msg.key === 'display') {
           setConfigValue('displayCfg', msg.value);
+        } else if (msg.key === 'panelCards') {
+          setConfigValue('panelCards', msg.value);
         }
       } else if (msg.cmd === 'openSettings') {
         vscode.commands.executeCommand('workbench.action.openSettings', 'sysmonitor');
@@ -1698,7 +1939,7 @@ class MonitorViewProvider {
     const gpus = getAllGpus();
     this._view.webview.postMessage({
       cmd: 'config', interval: cfg.interval, barCfg: cfg.barCfg, diskCfg: cfg.diskCfg, displayCfg: cfg.displayCfg,
-      gpuCount: gpus.length || 8,
+      gpuCount: gpus.length || 8, panelCards: cfg.panelCards,
     });
   }
 }
@@ -1941,6 +2182,11 @@ function activate(context) {
       if (!_selfWriting) {
         refreshConfigFromSettings();
         if (provider._view) provider._pushConfig();
+      }
+      if (e.affectsConfiguration('sysmonitor.gpuBackend')) {
+        _gpuBackend = null; _gpuBackendResolved = false;
+        _gpuCache = []; _gpuCacheTime = 0; _gpuState = '';
+        dbg('gpu backend config changed, resetting');
       }
       recreateBar();
       updateBar();

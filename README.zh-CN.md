@@ -21,8 +21,9 @@
 | **磁盘** | 挂载点进度条，实时读写速率及迷你图表，可配置过滤 |
 | **网络** | 服务器上传下载速率、迷你折线图 |
 | **SSH 流量** | 你的 SSH 连接的上传下载 |
-| **GPU** | NVIDIA 利用率、显存、温度、功耗（多卡支持） |
+| **GPU** | NVIDIA / AMD / Intel 利用率、显存、温度、功耗（多卡，自动检测后端） |
 | **空闲 GPU 选择器** | 选取空闲卡，一键复制 `CUDA_VISIBLE_DEVICES` |
+| **仪表板卡片** | 独立显隐每个监控卡片（CPU、内存、GPU、网络、磁盘、SSH），隐藏后自动补位 |
 | **进程管理器** | CPU / 内存 / GPU 排序，搜索，右键复制单元格、整行或 PID |
 | **状态栏** | 可配置位置、优先级和显示指标 |
 | **设置** | 内置设置面板，实时预览，无需编辑 JSON |
@@ -41,6 +42,7 @@
 ![设置](https://raw.githubusercontent.com/lcx-0504/sysmonitor/main/screenshots/settings.png)
 
 - **刷新间隔** — 1秒 / 2秒 / 5秒 / 10秒
+- **仪表板卡片** — 开关 CPU / 内存 / GPU / 网络 / 磁盘 / SSH 卡片显隐
 - **状态栏** — 开关、位置（左/右）、优先级、选择显示指标
 - **磁盘过滤** — 默认 / 更多 / 全部 / 自定义（排除 FS 类型、路径前缀、虚拟文件系统）
 - **显示** — 开关迷你折线图，图表时长（1–30 分钟）
@@ -83,9 +85,27 @@
   "sysmonitor.disk": {
     "mountFilter": "default",
     "hideParentMounts": true
+  },
+  "sysmonitor.gpuBackend": "auto",
+  "sysmonitor.panelCards": {
+    "cpu": true,
+    "ram": true,
+    "gpu": true,
+    "network": true,
+    "disk": true,
+    "ssh": false
   }
 }
 ```
+
+### GPU 后端模式
+
+| 模式 | 说明 |
+|------|------|
+| `"auto"` | 自动检测：依次探测 `nvidia-smi` → `rocm-smi` → Intel sysfs，首个可用即生效 |
+| `"nvidia"` | 强制使用 NVIDIA 后端（`nvidia-smi`） |
+| `"amd"` | 强制使用 AMD 后端（`rocm-smi`） |
+| `"intel"` | 强制使用 Intel 后端（sysfs） |
 
 ### GPU 状态栏模式
 
@@ -110,6 +130,8 @@
 
 - Linux（远程或本地）
 - NVIDIA GPU 监控需要 `nvidia-smi`
+- AMD GPU 监控需要 `rocm-smi`（ROCm 环境）
+- Intel GPU 监控使用 sysfs（`/sys/class/drm/`），无需额外工具
 - SSH 流量监控需要 `ss`（仅远程连接）
 
 ## 贡献者

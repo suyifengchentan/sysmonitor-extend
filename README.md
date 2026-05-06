@@ -23,8 +23,9 @@ A lightweight VS Code / Cursor extension for monitoring system resources on **re
 | **Disk** | Mount points with progress bars, real-time R/W speed with sparkline, configurable filters |
 | **Network** | Upload & download speed, sparkline charts |
 | **SSH Traffic** | Upload & download through your SSH connection |
-| **GPU** | NVIDIA utilization, VRAM, temperature, power draw (multi-GPU) |
+| **GPU** | NVIDIA / AMD / Intel utilization, VRAM, temperature, power draw (multi-GPU, auto-detected backend) |
 | **GPU Picker** | Select idle GPUs, copy `CUDA_VISIBLE_DEVICES` with one click |
+| **Dashboard Cards** | Show/hide individual monitoring cards (CPU, RAM, GPU, Network, Disk, SSH) — hidden cards auto-collapse |
 | **Process Manager** | Sort by CPU / RAM / GPU, searchable, right-click to copy cell, row, or PID |
 | **Status Bar** | Customizable position, priority, and displayed metrics |
 | **Settings** | Built-in settings panel with live preview — no JSON editing needed |
@@ -43,6 +44,7 @@ A lightweight VS Code / Cursor extension for monitoring system resources on **re
 ![Settings](https://raw.githubusercontent.com/lcx-0504/sysmonitor/main/screenshots/settings.png)
 
 - **Refresh Interval** — 1s / 2s / 5s / 10s
+- **Dashboard Cards** — Toggle CPU / RAM / GPU / Network / Disk / SSH card visibility
 - **Status Bar** — Toggle visibility, position (left/right), priority, choose which metrics to display
 - **Disk Filter** — Default / More / All / Custom (exclude FS types, path prefixes, virtual FS)
 - **Display** — Enable/disable sparkline charts, chart duration (1–30 min)
@@ -85,9 +87,27 @@ All settings are accessible via the **Settings** button in the sidebar panel. Yo
   "sysmonitor.disk": {
     "mountFilter": "default",
     "hideParentMounts": true
+  },
+  "sysmonitor.gpuBackend": "auto",
+  "sysmonitor.panelCards": {
+    "cpu": true,
+    "ram": true,
+    "gpu": true,
+    "network": true,
+    "disk": true,
+    "ssh": false
   }
 }
 ```
+
+### GPU backend modes
+
+| Mode | Description |
+|------|-------------|
+| `"auto"` | Auto-detect: probes `nvidia-smi` → `rocm-smi` → Intel sysfs, first found wins |
+| `"nvidia"` | Force NVIDIA backend (`nvidia-smi`) |
+| `"amd"` | Force AMD backend (`rocm-smi`) |
+| `"intel"` | Force Intel backend (sysfs) |
 
 ### GPU status bar modes
 
@@ -112,6 +132,8 @@ All settings are accessible via the **Settings** button in the sidebar panel. Yo
 
 - Linux (remote or local)
 - NVIDIA GPU monitoring requires `nvidia-smi`
+- AMD GPU monitoring requires `rocm-smi` (ROCm stack)
+- Intel GPU monitoring uses sysfs (`/sys/class/drm/`), no extra tools needed
 - SSH traffic monitoring requires `ss` (remote connections only)
 
 ## Contributors
