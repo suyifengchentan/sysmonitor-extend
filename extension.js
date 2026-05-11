@@ -2186,6 +2186,8 @@ function activate(context) {
       if (e.affectsConfiguration('sysmonitor.gpuBackend')) {
         _gpuBackend = null; _gpuBackendResolved = false;
         _gpuCache = []; _gpuCacheTime = 0; _gpuState = '';
+        _smiChainRunning = false;
+        _onGpuReady = null; _onChainDone = null;
         dbg('gpu backend config changed, resetting');
       }
       recreateBar();
