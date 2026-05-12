@@ -608,6 +608,7 @@ function getWebviewHtml(nonce, initCfg) {
   }
   .gpu-mini { flex: 1 1 180px; min-width: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: var(--radius); position: relative; overflow: hidden; }
   .gpu-mini > *:not(.spark-bg) { position: relative; z-index: 1; }
+  .gpu-mini.mine { border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
   .gpu-na { font-size: 11px; color: var(--muted); }
   .gpu-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 4px; gap: 4px; }
   .gpu-name { font-size: 11px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
@@ -1015,7 +1016,8 @@ function getWebviewHtml(nonce, initCfg) {
           var mu = parseInt(g.memUsed) || 0;
           var mt = parseInt(g.memTotal) || 1;
           var memPct = Math.min(100, Math.round(mu / mt * 100));
-          ghtml += '<div class="gpu-mini" style="position:relative;overflow:hidden">'
+          var isMine = d.myIndices && d.myIndices.indexOf(g.idx) >= 0;
+          ghtml += '<div class="gpu-mini' + (isMine ? ' mine' : '') + '" style="position:relative;overflow:hidden">'
             + '<svg class="spark-bg" id="gpu-spark-' + g.idx + '" viewBox="0 0 100 100" preserveAspectRatio="none"><path id="gpu-spark-area-' + g.idx + '" /></svg>'
             + '<div class="gpu-title"><span class="gpu-name">GPU ' + g.idx + '</span><span class="gpu-sub" title="' + g.name + '"><bdo dir="ltr">' + g.name + '</bdo></span></div>'
             + '<div class="bar-label"><span>' + T.utilLabel + '</span><span id="gpu-util-text-' + g.idx + '"><b>' + util + '%</b> <span class="gpu-link" data-gpu-link="' + g.idx + '">&nearr; ' + T.viewProcs + '</span></span></div>'
@@ -1056,6 +1058,9 @@ function getWebviewHtml(nonce, initCfg) {
           var util = parseInt(g.util) || 0;
           var mu = parseInt(g.memUsed) || 0, mt = parseInt(g.memTotal) || 1;
           var memPct = Math.min(100, Math.round(mu / mt * 100));
+          var isMine = d.myIndices && d.myIndices.indexOf(g.idx) >= 0;
+          var sparkEl = document.getElementById('gpu-spark-area-' + g.idx);
+          if (sparkEl) sparkEl.closest('.gpu-mini').classList.toggle('mine', isMine);
           var ub = document.getElementById('gpu-util-' + g.idx);
           var mb = document.getElementById('gpu-mem-' + g.idx);
           if (ub) { ub.style.width = util + '%'; ub.className = 'fill ' + colorClass(util); }
@@ -1883,6 +1888,7 @@ class MonitorViewProvider {
         load1: loads[0].toFixed(2), load5: loads[1].toFixed(2), load15: loads[2].toFixed(2),
         mem: { percent: mem.percent, usedStr: fmtSize(mem.used), availStr: fmtSize(mem.avail), totalStr: fmtSize(mem.total) },
         gpus,
+        myIndices: getMyGpuIndices(),
         gpuLoading: gpus.length === 0 && _gpuState === '',
         net: netData,
         ssh: ssh.isSSH ? { isSSH: true, tx: ssh.tx, rx: ssh.rx, txStr: fmtBytes(ssh.rx), rxStr: fmtBytes(ssh.tx) } : { isSSH: false },
