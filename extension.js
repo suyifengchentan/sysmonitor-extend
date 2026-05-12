@@ -87,7 +87,7 @@ const NvidiaBackend = {
             try {
               const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
               const m = status.match(/Uid:\s+(\d+)/);
-              if (m && parseInt(m[1]) === uid) myUuids.add(uuid);
+              if (m && parseInt(m[1]) === uid && vram >= 100) myUuids.add(uuid);
             } catch { }
           }
         }
