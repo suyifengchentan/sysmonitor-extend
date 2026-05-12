@@ -101,7 +101,8 @@
           "type": "object",
           "default": {
             "charts": true,
-            "sparkMinutes": 5
+            "sparkMinutes": 5,
+            "gpuHighlight": true
           },
           "description": "Display settings"
         },
