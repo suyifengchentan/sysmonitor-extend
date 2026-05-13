@@ -363,7 +363,6 @@ function refreshGpuChain() {
     return;
   }
   _smiChainRunning = true;
-  _gpuProcMap = {}; _gpuMyIndices = [];
   backend.refresh(() => {
     backend.getProcesses(() => {});
   });
