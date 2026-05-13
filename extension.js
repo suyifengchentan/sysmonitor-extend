@@ -1351,6 +1351,19 @@ function getWebviewHtml(nonce, initCfg) {
       });
     }
 
+    // Emphasizing Color (before bar-off return so toggle always visible)
+    var emphasisBody = document.getElementById('sett-emphasis-body');
+    if (emphasisBody) {
+      var eh = '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + T.gpuHighlight + '</span>';
+      eh += '<button class="tb' + (displayCfg.gpuHighlight !== false ? ' on' : '') + '" data-act="gpu-highlight-toggle">' + (displayCfg.gpuHighlight !== false ? T.enabled : T.disabled) + '</button></div>';
+      emphasisBody.innerHTML = eh;
+      emphasisBody.querySelector('[data-act="gpu-highlight-toggle"]').addEventListener('click', function() {
+        displayCfg.gpuHighlight = !displayCfg.gpuHighlight;
+        vscode.postMessage({cmd:'setConfig',key:'display',value:displayCfg});
+        renderSettingsBody();
+      });
+    }
+
     if (!barOn) { body.innerHTML = h; bindSettingsEvents(body, cfg); return; }
     var curAlign = cfg.alignment || 'left';
     h += row(T.barAlign, '<button class="tb'+(curAlign==='left'?' on':'')+'" data-act="radio" data-key="alignment" data-val="left">'+(zh?'左':'Left')+'</button><button class="tb'+(curAlign==='right'?' on':'')+'" data-act="radio" data-key="alignment" data-val="right">'+(zh?'右':'Right')+'</button>');
@@ -1397,19 +1410,6 @@ function getWebviewHtml(nonce, initCfg) {
 
     body.innerHTML = h;
     bindSettingsEvents(body, cfg);
-
-    // Emphasizing Color
-    var emphasisBody = document.getElementById('sett-emphasis-body');
-    if (emphasisBody) {
-      var eh = '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + T.gpuHighlight + '</span>';
-      eh += '<button class="tb' + (displayCfg.gpuHighlight !== false ? ' on' : '') + '" data-act="gpu-highlight-toggle">' + (displayCfg.gpuHighlight !== false ? T.enabled : T.disabled) + '</button></div>';
-      emphasisBody.innerHTML = eh;
-      emphasisBody.querySelector('[data-act="gpu-highlight-toggle"]').addEventListener('click', function() {
-        displayCfg.gpuHighlight = !displayCfg.gpuHighlight;
-        vscode.postMessage({cmd:'setConfig',key:'display',value:displayCfg});
-        renderSettingsBody();
-      });
-    }
 
     var diskBody = document.getElementById('sett-disk-body');
     var curFilter = diskCfg.mountFilter || 'default';
