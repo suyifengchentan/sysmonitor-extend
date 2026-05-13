@@ -72,7 +72,7 @@ const NvidiaBackend = {
       ['--query-compute-apps=pid,gpu_uuid,used_memory', '--format=csv,noheader,nounits'],
       { timeout: 15000 }, (err2, appOut) => {
         _smiChainRunning = false;
-        if (err2 || !appOut.trim()) { if (callback) callback(); return; }
+        if (err2 || !appOut.trim()) { _gpuProcMap = {}; _gpuMyIndices = []; if (callback) callback(); return; }
         const gpuMap = {};
         const myUuids = new Set();
         const uid = process.getuid();
@@ -363,6 +363,7 @@ function refreshGpuChain() {
     return;
   }
   _smiChainRunning = true;
+  _gpuProcMap = {}; _gpuMyIndices = [];
   backend.refresh(() => {
     backend.getProcesses(() => {});
   });
