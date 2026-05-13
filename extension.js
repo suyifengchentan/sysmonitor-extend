@@ -717,6 +717,10 @@ function getWebviewHtml(nonce, initCfg) {
     <div id="sett-body"></div>
   </div>
   <div class="sett-section">
+    <div class="sett-label" id="sett-emphasis-label">Emphasizing Color</div>
+    <div id="sett-emphasis-body"></div>
+  </div>
+  <div class="sett-section">
     <div class="sett-label" id="sett-disk-label">磁盘</div>
     <div id="sett-disk-body"></div>
   </div>
@@ -833,7 +837,7 @@ function getWebviewHtml(nonce, initCfg) {
           netUp:'仅上传',netDown:'仅下载',netAll:'全部显示',netMerge:'合并显示',
           sshLabel:'SSH速率',gpuSummary:'GPU总览',gpuIdleIds:'显示空闲卡号',gpuPerf:'GPU性能显示',gpuAll:'所有卡',gpuSpecify:'指定卡',gpuFirst:'前几张',gpuMetric:'GPU显示指标',gpuSkipIdle:'隐藏空闲卡',viewProcs:'查看进程',
           diskLabel:'磁盘',diskUsage:'磁盘容量',diskIO:'磁盘速率',diskIORead:'仅读',diskIOWrite:'仅写',diskNoData:'无磁盘数据',diskFilter:'挂载过滤',diskDefault:'默认',diskMore:'更多',diskAll:'全部',diskCustom:'自定义',diskShowVirtual:'排除虚拟 FS',diskShowVirtualTip:'tmpfs, sysfs, proc, devtmpfs 等',diskExcludeFs:'排除 FS 类型',diskExcludeFsTip:'如 vfat, ntfs, fuse 等文件系统类型',diskExcludePath:'排除路径前缀',diskExcludePathTip:'如 /proc, /sys, /run 等挂载路径',diskHideParent:'仅显示叶子挂载点',diskHideParentTip:'例: /autodl-fs 和 /autodl-fs/data 同时存在时只显示 /autodl-fs/data（适用于 AutoDL 等平台）',
-          displayLabel:'显示',chartsToggle:'卡片背景图表',sparkLabel:'图表时长',tabularNums:'等宽数字',tabularNumsTip:'所有数字宽度一致，布局更稳定，但可能显得略宽松',gpuHighlight:'高亮占用中的GPU',
+          displayLabel:'显示',chartsToggle:'卡片背景图表',sparkLabel:'图表时长',tabularNums:'等宽数字',tabularNumsTip:'所有数字宽度一致，布局更稳定，但可能显得略宽松',emphasisLabel:'强调色',gpuHighlight:'高亮占用中的GPU',
           pcpu:'CPU',pmem:'内存',pgpu:'GPU',ppid:'PID',puser:'用户',pname:'进程名',pcpuPct:'CPU%',pmemCol:'内存',pgpuCol:'GPU',pcount:'共 {n} 进程',pnoGpu:'—',pcmd:'命令',filterHint:'搜索进程...' }
       : { min:' min',cores:' cores',used:'Used',avail:'Avail',total:'Total',srvNet:'Server Net',net:'Network',localSSH:'Local SSH',up:'↑ Up',down:'↓ Down',selAll:'Select All',clear:'Clear',copyEnv:'Copy Env Var',detecting:'Detecting…',noGpu:'No NVIDIA GPU detected',updAt:'Updated ',utilLabel:'Util',memLabel:'VRAM',tempLabel:'Temp',pwLabel:'Power',
           perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
@@ -842,7 +846,7 @@ function getWebviewHtml(nonce, initCfg) {
           netUp:'Upload',netDown:'Download',netAll:'All',netMerge:'Merged',
           sshLabel:'SSH Traffic',gpuSummary:'GPU Summary',gpuIdleIds:'Show Idle IDs',gpuPerf:'GPU Performance',gpuAll:'All Cards',gpuSpecify:'Specific',gpuFirst:'First N',gpuMetric:'GPU Metric',gpuSkipIdle:'Hide Idle',viewProcs:'View Procs',
           diskLabel:'Disk',diskUsage:'Disk Usage',diskIO:'Disk I/O',diskIORead:'Read',diskIOWrite:'Write',diskNoData:'No disk data',diskFilter:'Mount Filter',diskDefault:'Default',diskMore:'More',diskAll:'All',diskCustom:'Custom',diskShowVirtual:'Exclude Virtual FS',diskShowVirtualTip:'tmpfs, sysfs, proc, devtmpfs, etc.',diskExcludeFs:'Exclude FS Type',diskExcludeFsTip:'e.g. vfat, ntfs, fuse',diskExcludePath:'Exclude Path Prefix',diskExcludePathTip:'e.g. /proc, /sys, /run',diskHideParent:'Leaf mounts only',diskHideParentTip:'e.g. if /autodl-fs and /autodl-fs/data both exist, only /autodl-fs/data is shown (useful on AutoDL, etc.)',
-          displayLabel:'Display',chartsToggle:'Card Background Charts',sparkLabel:'Chart Duration',tabularNums:'Tabular Numbers',tabularNumsTip:'All digits have equal width for stable layout, but may appear slightly wider',gpuHighlight:'Highlight Using GPUs',
+          displayLabel:'Display',chartsToggle:'Card Background Charts',sparkLabel:'Chart Duration',tabularNums:'Tabular Numbers',tabularNumsTip:'All digits have equal width for stable layout, but may appear slightly wider',emphasisLabel:'Emphasizing Color',gpuHighlight:'Highlight Using GPUs',
           pcpu:'CPU',pmem:'Memory',pgpu:'GPU',ppid:'PID',puser:'User',pname:'Process',pcpuPct:'CPU%',pmemCol:'Mem',pgpuCol:'GPU',pcount:'{n} processes',pnoGpu:'—',pcmd:'Command',filterHint:'Search...' };
     document.getElementById('l-1m').textContent = '1' + T.min;
     document.getElementById('l-5m').textContent = '5' + T.min;
@@ -1269,6 +1273,7 @@ function getWebviewHtml(nonce, initCfg) {
     document.getElementById('modal-title-text').textContent = T.settTitle;
     document.getElementById('sett-interval-label').textContent = T.interval;
     document.getElementById('sett-bar-label').textContent = T.statusBar;
+    document.getElementById('sett-emphasis-label').textContent = T.emphasisLabel;
     document.getElementById('sett-disk-label').textContent = T.diskLabel;
     document.getElementById('sett-display-label').textContent = T.displayLabel;
     renderIntervalRow();
@@ -1393,6 +1398,19 @@ function getWebviewHtml(nonce, initCfg) {
     body.innerHTML = h;
     bindSettingsEvents(body, cfg);
 
+    // Emphasizing Color
+    var emphasisBody = document.getElementById('sett-emphasis-body');
+    if (emphasisBody) {
+      var eh = '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + T.gpuHighlight + '</span>';
+      eh += '<button class="tb' + (displayCfg.gpuHighlight !== false ? ' on' : '') + '" data-act="gpu-highlight-toggle">' + (displayCfg.gpuHighlight !== false ? T.enabled : T.disabled) + '</button></div>';
+      emphasisBody.innerHTML = eh;
+      emphasisBody.querySelector('[data-act="gpu-highlight-toggle"]').addEventListener('click', function() {
+        displayCfg.gpuHighlight = !displayCfg.gpuHighlight;
+        vscode.postMessage({cmd:'setConfig',key:'display',value:displayCfg});
+        renderSettingsBody();
+      });
+    }
+
     var diskBody = document.getElementById('sett-disk-body');
     var curFilter = diskCfg.mountFilter || 'default';
     var dh = '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + T.diskFilter + '</span>';
@@ -1488,8 +1506,6 @@ function getWebviewHtml(nonce, initCfg) {
     dph += '</div>';
     dph += '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px" title="' + T.tabularNumsTip + '">' + T.tabularNums + ' \u24d8</span>';
     dph += '<button class="tb' + (displayCfg.tabularNums !== false ? ' on' : '') + '" data-act="tabular-toggle">' + (displayCfg.tabularNums !== false ? T.enabled : T.disabled) + '</button></div>';
-    dph += '<div class="sett-row"><span style="font-size:10px;color:var(--muted);min-width:60px">' + T.gpuHighlight + '</span>';
-    dph += '<button class="tb' + (displayCfg.gpuHighlight !== false ? ' on' : '') + '" data-act="gpu-highlight-toggle">' + (displayCfg.gpuHighlight !== false ? T.enabled : T.disabled) + '</button></div>';
     dispBody.innerHTML = dph;
     dispBody.querySelector('[data-act="charts-toggle"]').addEventListener('click', function() {
       displayCfg.charts = !displayCfg.charts;
@@ -1501,11 +1517,6 @@ function getWebviewHtml(nonce, initCfg) {
       displayCfg.tabularNums = !displayCfg.tabularNums;
       vscode.postMessage({cmd:'setConfig',key:'display',value:displayCfg});
       applyTabularNums();
-      renderSettingsBody();
-    });
-    dispBody.querySelector('[data-act="gpu-highlight-toggle"]').addEventListener('click', function() {
-      displayCfg.gpuHighlight = !displayCfg.gpuHighlight;
-      vscode.postMessage({cmd:'setConfig',key:'display',value:displayCfg});
       renderSettingsBody();
     });
     dispBody.querySelectorAll('[data-act="spark-min"]').forEach(function(btn) {
