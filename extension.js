@@ -1745,13 +1745,15 @@ let _flushTimer = null;
 
 function _readSettingsOnce() {
   const c = vscode.workspace.getConfiguration('sysmonitor');
+  // Merge user values over defaults so new fields always appear
+  const merge = (key, df) => Object.assign({}, df, c.get(key) || {});
   return {
     interval: c.get('refreshInterval', CFG_DEFAULTS.interval),
-    barCfg: c.get('statusBar') || CFG_DEFAULTS.barCfg,
-    diskCfg: c.get('disk') || CFG_DEFAULTS.diskCfg,
-    displayCfg: c.get('display') || CFG_DEFAULTS.displayCfg,
+    barCfg: merge('statusBar', CFG_DEFAULTS.barCfg),
+    diskCfg: merge('disk', CFG_DEFAULTS.diskCfg),
+    displayCfg: merge('display', CFG_DEFAULTS.displayCfg),
     gpuBackend: c.get('gpuBackend', CFG_DEFAULTS.gpuBackend),
-    panelCards: c.get('panelCards') || CFG_DEFAULTS.panelCards,
+    panelCards: merge('panelCards', CFG_DEFAULTS.panelCards),
   };
 }
 
