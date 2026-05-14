@@ -93,7 +93,8 @@
           "type": "object",
           "default": {
             "mountFilter": "default",
-            "hideParentMounts": true
+            "hideParentMounts": true,
+            "customMounts": []
           },
           "description": "Disk monitoring settings"
         },

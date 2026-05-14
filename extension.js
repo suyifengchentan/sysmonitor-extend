@@ -1750,7 +1750,7 @@ function getWebviewHtml(nonce, initCfg) {
 const CFG_DEFAULTS = {
   interval: 2,
   barCfg: { barEnabled: true, alignment: 'left', priority: 10, cpu: true, ram: false, disk: false, diskIO: 'off', net: 'off', ssh: false, gpu: { summary: true, showIdleIds: false, mode: 'off', cards: [], metric: 'both' } },
-  diskCfg: { mountFilter: 'default', hideParentMounts: true },
+  diskCfg: { mountFilter: 'default', hideParentMounts: true, customMounts: [] },
   displayCfg: { charts: true, sparkMinutes: 5, tabularNums: true, gpuHighlight: true },
   gpuBackend: 'auto',
   panelCards: { cpu: true, ram: true, gpu: true, network: true, disk: true, ssh: false },
@@ -1906,6 +1906,11 @@ class MonitorViewProvider {
       if (diskCfg.hideParentMounts !== false) {
         const mounts = disks.map(d => d.mount);
         disks = disks.filter(d => d.mount === '/' || !mounts.some(m => m !== d.mount && m.startsWith(d.mount + '/')));
+      }
+      // Custom mount whitelist: if set, only show specified mount points (max 5)
+      if (diskCfg.customMounts && diskCfg.customMounts.length > 0) {
+        const wanted = new Set(diskCfg.customMounts.slice(0, 5));
+        disks = disks.filter(d => wanted.has(d.mount));
       }
       // state-change logging
       if (gpus.length !== _prevGpuCount) { dbg('GPU: ' + (gpus.length ? gpus.length + ' cards (' + gpus.map(g => g.name).join(', ') + ')' : 'none')); _prevGpuCount = gpus.length; }
