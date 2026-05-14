@@ -43,26 +43,42 @@ const NvidiaBackend = {
   },
   refresh(callback) {
     execFile('nvidia-smi', [
-      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid,pcie.link.gen.current,pcie.link.width.current',
+      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid',
       '--format=csv,noheader,nounits'
     ], { timeout: 15000 }, (err, stdout) => {
       if (err) {
         const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
         if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
-      } else {
-        try {
-          const parsed = _parseNvidiaCsv(stdout);
-          if (parsed.length > 0 || _gpuCache.length === 0) {
-            _gpuCache = parsed;
-            _gpuCacheTime = Date.now();
-            _uuidToIdx = {}; _uuidToMem = {};
-            for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
-          }
-          if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, nvidia)'); _gpuState = 'fresh'; }
-          if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
-        } catch (e) {
-          if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
+        if (callback) callback();
+        return;
+      }
+      try {
+        const parsed = _parseNvidiaCsv(stdout);
+        if (parsed.length > 0 || _gpuCache.length === 0) {
+          _gpuCache = parsed;
+          _gpuCacheTime = Date.now();
+          _uuidToIdx = {}; _uuidToMem = {};
+          for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
         }
+        if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, nvidia)'); _gpuState = 'fresh'; }
+        if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+        // Query PCIe info separately so a failure here doesn't break GPU stats
+        execFile('nvidia-smi', [
+          '--query-gpu=index,pcie.link.gen.current,pcie.link.width.current',
+          '--format=csv,noheader,nounits'
+        ], { timeout: 10000 }, (pcieErr, pcieOut) => {
+          if (!pcieErr && pcieOut.trim()) {
+            try {
+              for (const line of pcieOut.trim().split('\n').filter(Boolean)) {
+                const [idx, gen, width] = line.split(',').map(s => s.trim());
+                const g = _gpuCache.find(g => g.idx === parseInt(idx));
+                if (g) { g.pcieGen = parseInt(gen) || null; g.pcieWidth = parseInt(width) || null; }
+              }
+            } catch { }
+          }
+        });
+      } catch (e) {
+        if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
       }
       if (callback) callback();
     });
@@ -226,15 +242,14 @@ function getGpuBackend() {
 
 function _parseNvidiaCsv(stdout) {
   return stdout.trim().split('\n').filter(Boolean).map(line => {
-    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid, pcieGen, pcieWidth] = line.split(',').map(s => s.trim());
+    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid] = line.split(',').map(s => s.trim());
     return {
       idx: parseInt(idx), name, uuid: uuid || '',
       util: parseInt(util), memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
       temp: parseInt(temp),
       powerDraw: isNaN(parseFloat(pd)) ? null : Number(parseFloat(pd).toFixed(0)),
       powerLimit: isNaN(parseFloat(pl)) ? null : Number(parseFloat(pl).toFixed(0)),
-      pcieGen: parseInt(pcieGen) || null,
-      pcieWidth: parseInt(pcieWidth) || null,
+      pcieGen: null, pcieWidth: null,
       backend: 'nvidia'
     };
   });
