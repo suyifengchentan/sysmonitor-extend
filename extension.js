@@ -43,7 +43,7 @@ const NvidiaBackend = {
   },
   refresh(callback) {
     execFile('nvidia-smi', [
-      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid',
+      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid,pcie.link.gen.current,pcie.link.width.current',
       '--format=csv,noheader,nounits'
     ], { timeout: 15000 }, (err, stdout) => {
       if (err) {
@@ -107,7 +107,7 @@ const AmdBackend = {
     catch { return false; }
   },
   refresh(callback) {
-    execFile('rocm-smi', ['--showuse', '--showtemp', '--showmeminfo', 'vram', '--json'], { timeout: 15000 }, (err, stdout) => {
+    execFile('rocm-smi', ['--showuse', '--showtemp', '--showmeminfo', 'vram', '--showpcie', '--json'], { timeout: 15000 }, (err, stdout) => {
       if (err) {
         const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
         if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
@@ -172,6 +172,7 @@ const IntelBackend = {
             uuid: 'intel-' + card,
             util, memUsed, memTotal, temp,
             powerDraw: null, powerLimit: null,
+            pcieGen: null, pcieWidth: null,
             backend: 'intel'
           });
         } catch { }
@@ -225,13 +226,15 @@ function getGpuBackend() {
 
 function _parseNvidiaCsv(stdout) {
   return stdout.trim().split('\n').filter(Boolean).map(line => {
-    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid] = line.split(',').map(s => s.trim());
+    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid, pcieGen, pcieWidth] = line.split(',').map(s => s.trim());
     return {
       idx: parseInt(idx), name, uuid: uuid || '',
       util: parseInt(util), memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
       temp: parseInt(temp),
       powerDraw: isNaN(parseFloat(pd)) ? null : Number(parseFloat(pd).toFixed(0)),
       powerLimit: isNaN(parseFloat(pl)) ? null : Number(parseFloat(pl).toFixed(0)),
+      pcieGen: parseInt(pcieGen) || null,
+      pcieWidth: parseInt(pcieWidth) || null,
       backend: 'nvidia'
     };
   });
@@ -270,7 +273,9 @@ function _parseRocmJson(stdout) {
         break;
       }
     }
-    return { idx, name, uuid: 'amd-' + idx, util, memUsed, memTotal, temp, powerDraw: null, powerLimit: null, backend: 'amd' };
+    const pcieGen = parseInt(getVal(['pcie speed', 'PCIe Speed', 'pcie_speed', 'link speed'])) || null;
+    const pcieWidth = parseInt(getVal(['pcie width', 'PCIe Width', 'pcie_width', 'link width'])) || null;
+    return { idx, name, uuid: 'amd-' + idx, util, memUsed, memTotal, temp, powerDraw: null, powerLimit: null, pcieGen, pcieWidth, backend: 'amd' };
   });
 }
 
@@ -831,7 +836,7 @@ function getWebviewHtml(nonce, initCfg) {
     zh = lang && lang.startsWith('zh');
     T = zh
       ? { min:' 分钟',cores:' 核',used:'已用',avail:'可用',total:'总计',srvNet:'服务器网络',net:'网络',localSSH:'本机 SSH',up:'↑ 上传',down:'↓ 下载',selAll:'全选空闲',clear:'清除',copyEnv:'复制环境变量',detecting:'检测中…',noGpu:'未检测到 NVIDIA GPU',updAt:'更新于 ',utilLabel:'利用率',memLabel:'显存',tempLabel:'温度',pwLabel:'功耗',
-          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',panelCardsLabel:'仪表板卡片',statusBar:'状态栏',barToggle:'显示状态栏',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
+          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',panelCardsLabel:'仪表板卡片',statusBar:'状态栏',barToggle:'显示状态栏',pcieLabel:'GEN',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
           netLabel:'网络速率',gpuLabel:'GPU',
           scopeOff:'关',scopeSummary:'总览',scopeCard:'指定卡',scopeMy:'我的卡',metUtil:'仅利用率',metVram:'仅显存',metBoth:'全部显示',
           netUp:'仅上传',netDown:'仅下载',netAll:'全部显示',netMerge:'合并显示',
@@ -840,7 +845,7 @@ function getWebviewHtml(nonce, initCfg) {
           displayLabel:'显示',chartsToggle:'卡片背景图表',sparkLabel:'图表时长',tabularNums:'等宽数字',tabularNumsTip:'所有数字宽度一致，布局更稳定，但可能显得略宽松',emphasisLabel:'强调色',gpuHighlight:'高亮占用中的GPU',
           pcpu:'CPU',pmem:'内存',pgpu:'GPU',ppid:'PID',puser:'用户',pname:'进程名',pcpuPct:'CPU%',pmemCol:'内存',pgpuCol:'GPU',pcount:'共 {n} 进程',pnoGpu:'—',pcmd:'命令',filterHint:'搜索进程...' }
       : { min:' min',cores:' cores',used:'Used',avail:'Avail',total:'Total',srvNet:'Server Net',net:'Network',localSSH:'Local SSH',up:'↑ Up',down:'↓ Down',selAll:'Select All',clear:'Clear',copyEnv:'Copy Env Var',detecting:'Detecting…',noGpu:'No NVIDIA GPU detected',updAt:'Updated ',utilLabel:'Util',memLabel:'VRAM',tempLabel:'Temp',pwLabel:'Power',
-          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
+          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',pcieLabel:'GEN',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
           netLabel:'Network',gpuLabel:'GPU',
           scopeOff:'Off',scopeSummary:'Summary',scopeCard:'Card',scopeMy:'My Card',metUtil:'Util Only',metVram:'VRAM Only',metBoth:'All',
           netUp:'Upload',netDown:'Download',netAll:'All',netMerge:'Merged',
@@ -1029,7 +1034,7 @@ function getWebviewHtml(nonce, initCfg) {
             + '<div class="track"><div class="fill ' + colorClass(util) + '" id="gpu-util-' + g.idx + '"></div></div>'
             + '<div class="bar-label"><span>' + T.memLabel + '</span><span class="gpu-mem-wrap"><span class="ltr-ellipsis" id="gpu-mem-text-' + g.idx + '" title="' + mu + ' / ' + mt + ' MiB"><bdo dir="ltr">' + mu + ' / ' + mt + ' MiB</bdo></span><span class="gpu-pct" id="gpu-mem-pct-' + g.idx + '">' + memPct + '%</span></span></div>'
             + '<div class="track"><div class="fill ' + colorClass(memPct) + '" id="gpu-mem-' + g.idx + '"></div></div>'
-            + '<div class="gpu-stats"><span id="gpu-temp-' + g.idx + '" title="' + T.tempLabel + ' ' + (g.temp || 0) + ' °C">' + T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b></span>' + (g.powerDraw != null ? '<span id="gpu-power-' + g.idx + '" title="' + T.pwLabel + ' ' + g.powerDraw + '/' + g.powerLimit + ' W">' + T.pwLabel + ' <b>' + g.powerDraw + '/' + g.powerLimit + ' W</b></span>' : '') + '</div></div>';
+            + '<div class="gpu-stats"><span id="gpu-temp-' + g.idx + '" title="' + T.tempLabel + ' ' + (g.temp || 0) + ' °C">' + T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b></span>' + (g.powerDraw != null ? '<span id="gpu-power-' + g.idx + '" title="' + T.pwLabel + ' ' + g.powerDraw + '/' + g.powerLimit + ' W">' + T.pwLabel + ' <b>' + g.powerDraw + '/' + g.powerLimit + ' W</b></span>' : '') + (g.pcieGen != null ? '<span id="gpu-pcie-' + g.idx + '" title="' + T.pcieLabel + ' ' + g.pcieGen + '@' + g.pcieWidth + 'x">' + T.pcieLabel + ' <b>' + g.pcieGen + '@' + g.pcieWidth + 'x</b></span>' : '') + '</div></div>';
         });
         gpuBody.innerHTML = ghtml;
         applyCharts();
@@ -1081,6 +1086,8 @@ function getWebviewHtml(nonce, initCfg) {
           if (te) { te.innerHTML = T.tempLabel + ' <b>' + (g.temp || 0) + ' °C</b>'; te.title = T.tempLabel + ' ' + (g.temp || 0) + ' °C'; }
           var pw = document.getElementById('gpu-power-' + g.idx);
           if (pw && g.powerDraw != null) { pw.innerHTML = T.pwLabel + ' <b>' + g.powerDraw + '/' + g.powerLimit + ' W</b>'; pw.title = T.pwLabel + ' ' + g.powerDraw + '/' + g.powerLimit + ' W'; }
+          var pcie = document.getElementById('gpu-pcie-' + g.idx);
+          if (pcie && g.pcieGen != null) { pcie.innerHTML = T.pcieLabel + ' <b>' + g.pcieGen + '@' + g.pcieWidth + 'x</b>'; pcie.title = T.pcieLabel + ' ' + g.pcieGen + '@' + g.pcieWidth + 'x'; }
           var ga = document.getElementById('gpu-spark-area-' + g.idx);
           if (ga && gpuHist[g.idx]) renderSpark(ga, null, gpuHist[g.idx], 100, sparkColor(util));
         });
