@@ -43,42 +43,26 @@ const NvidiaBackend = {
   },
   refresh(callback) {
     execFile('nvidia-smi', [
-      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid',
+      '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,gpu_uuid,pcie.link.gen.current,pcie.link.width.current',
       '--format=csv,noheader,nounits'
     ], { timeout: 15000 }, (err, stdout) => {
       if (err) {
         const s = _gpuCache.length > 0 ? 'fallback' : 'unavailable';
         if (s !== _gpuState) { dbg('gpu snapshot ' + s + ': ' + (err.message || err)); _gpuState = s; }
-        if (callback) callback();
-        return;
-      }
-      try {
-        const parsed = _parseNvidiaCsv(stdout);
-        if (parsed.length > 0 || _gpuCache.length === 0) {
-          _gpuCache = parsed;
-          _gpuCacheTime = Date.now();
-          _uuidToIdx = {}; _uuidToMem = {};
-          for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
-        }
-        if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, nvidia)'); _gpuState = 'fresh'; }
-        if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
-        // Query PCIe info separately so a failure here doesn't break GPU stats
-        execFile('nvidia-smi', [
-          '--query-gpu=index,pcie.link.gen.current,pcie.link.width.current',
-          '--format=csv,noheader,nounits'
-        ], { timeout: 10000 }, (pcieErr, pcieOut) => {
-          if (!pcieErr && pcieOut.trim()) {
-            try {
-              for (const line of pcieOut.trim().split('\n').filter(Boolean)) {
-                const [idx, gen, width] = line.split(',').map(s => s.trim());
-                const g = _gpuCache.find(g => g.idx === parseInt(idx));
-                if (g) { g.pcieGen = parseInt(gen) || null; g.pcieWidth = parseInt(width) || null; }
-              }
-            } catch { }
+      } else {
+        try {
+          const parsed = _parseNvidiaCsv(stdout);
+          if (parsed.length > 0 || _gpuCache.length === 0) {
+            _gpuCache = parsed;
+            _gpuCacheTime = Date.now();
+            _uuidToIdx = {}; _uuidToMem = {};
+            for (const g of parsed) { _uuidToIdx[g.uuid] = g.idx; _uuidToMem[g.uuid] = g.memTotal; }
           }
-        });
-      } catch (e) {
-        if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
+          if (_gpuState !== 'fresh') { dbg('gpu snapshot fresh (' + _gpuCache.length + ' gpus, nvidia)'); _gpuState = 'fresh'; }
+          if (_onGpuReady) { _onGpuReady(); _onGpuReady = null; }
+        } catch (e) {
+          if (_gpuState !== 'parse-error') { dbg('gpu parse error: ' + e.message); _gpuState = 'parse-error'; }
+        }
       }
       if (callback) callback();
     });
@@ -104,7 +88,10 @@ const NvidiaBackend = {
               const status = fs.readFileSync('/proc/' + pid + '/status', 'utf8');
               const m = status.match(/Uid:\s+(\d+)/);
               if (m && parseInt(m[1]) === uid && vram >= 100) myUuids.add(uuid);
-            } catch { }
+            } catch (e) {
+              // /proc/<pid>/status may not exist (container, exited process); fallback to VRAM-only check
+              if (vram >= 100) myUuids.add(uuid);
+            }
           }
         }
         _gpuProcMap = gpuMap;
@@ -242,14 +229,15 @@ function getGpuBackend() {
 
 function _parseNvidiaCsv(stdout) {
   return stdout.trim().split('\n').filter(Boolean).map(line => {
-    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid] = line.split(',').map(s => s.trim());
+    const [idx, name, util, memUsed, memTotal, temp, pd, pl, uuid, pcieGen, pcieWidth] = line.split(',').map(s => s.trim());
     return {
       idx: parseInt(idx), name, uuid: uuid || '',
       util: parseInt(util), memUsed: parseInt(memUsed), memTotal: parseInt(memTotal),
       temp: parseInt(temp),
       powerDraw: isNaN(parseFloat(pd)) ? null : Number(parseFloat(pd).toFixed(0)),
       powerLimit: isNaN(parseFloat(pl)) ? null : Number(parseFloat(pl).toFixed(0)),
-      pcieGen: null, pcieWidth: null,
+      pcieGen: parseInt(pcieGen) || null,
+      pcieWidth: parseInt(pcieWidth) || null,
       backend: 'nvidia'
     };
   });
@@ -851,7 +839,7 @@ function getWebviewHtml(nonce, initCfg) {
     zh = lang && lang.startsWith('zh');
     T = zh
       ? { min:' 分钟',cores:' 核',used:'已用',avail:'可用',total:'总计',srvNet:'服务器网络',net:'网络',localSSH:'本机 SSH',up:'↑ 上传',down:'↓ 下载',selAll:'全选空闲',clear:'清除',copyEnv:'复制环境变量',detecting:'检测中…',noGpu:'未检测到 NVIDIA GPU',updAt:'更新于 ',utilLabel:'利用率',memLabel:'显存',tempLabel:'温度',pwLabel:'功耗',
-          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',panelCardsLabel:'仪表板卡片',statusBar:'状态栏',barToggle:'显示状态栏',pcieLabel:'GEN',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
+          perfTab:'性能',procTab:'进程',settBtn:'设置',running:'运行中',stopped:'已暂停',enabled:'已开启',disabled:'已关闭',settTitle:'设置',interval:'刷新间隔',panelCardsLabel:'仪表板卡片',statusBar:'状态栏',barToggle:'显示状态栏',pcieLabel:'Gen',barAlign:'位置',barPriority:'优先级',barPriorityTip:'数字越大越靠左（左侧）或越靠右（右侧），默认 10',close:'关闭',
           netLabel:'网络速率',gpuLabel:'GPU',
           scopeOff:'关',scopeSummary:'总览',scopeCard:'指定卡',scopeMy:'我的卡',metUtil:'仅利用率',metVram:'仅显存',metBoth:'全部显示',
           netUp:'仅上传',netDown:'仅下载',netAll:'全部显示',netMerge:'合并显示',
@@ -860,7 +848,7 @@ function getWebviewHtml(nonce, initCfg) {
           displayLabel:'显示',chartsToggle:'卡片背景图表',sparkLabel:'图表时长',tabularNums:'等宽数字',tabularNumsTip:'所有数字宽度一致，布局更稳定，但可能显得略宽松',emphasisLabel:'强调色',gpuHighlight:'高亮占用中的GPU',
           pcpu:'CPU',pmem:'内存',pgpu:'GPU',ppid:'PID',puser:'用户',pname:'进程名',pcpuPct:'CPU%',pmemCol:'内存',pgpuCol:'GPU',pcount:'共 {n} 进程',pnoGpu:'—',pcmd:'命令',filterHint:'搜索进程...' }
       : { min:' min',cores:' cores',used:'Used',avail:'Avail',total:'Total',srvNet:'Server Net',net:'Network',localSSH:'Local SSH',up:'↑ Up',down:'↓ Down',selAll:'Select All',clear:'Clear',copyEnv:'Copy Env Var',detecting:'Detecting…',noGpu:'No NVIDIA GPU detected',updAt:'Updated ',utilLabel:'Util',memLabel:'VRAM',tempLabel:'Temp',pwLabel:'Power',
-          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',pcieLabel:'GEN',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
+          perfTab:'Perf',procTab:'Procs',settBtn:'Settings',running:'Running',stopped:'Paused',enabled:'Enabled',disabled:'Disabled',settTitle:'Settings',interval:'Refresh Interval',panelCardsLabel:'Dashboard Cards',statusBar:'Status Bar',barToggle:'Show Status Bar',pcieLabel:'Gen',barAlign:'Position',barPriority:'Priority',barPriorityTip:'Higher = closer to the edge. Default: 10',close:'Close',
           netLabel:'Network',gpuLabel:'GPU',
           scopeOff:'Off',scopeSummary:'Summary',scopeCard:'Card',scopeMy:'My Card',metUtil:'Util Only',metVram:'VRAM Only',metBoth:'All',
           netUp:'Upload',netDown:'Download',netAll:'All',netMerge:'Merged',
